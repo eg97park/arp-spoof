@@ -1,2 +1,2 @@
 #!/bin/bash
-pkexec /usr/bin/gdb "$@";
+sudo pkexec /usr/bin/gdb "$@";
