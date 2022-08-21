@@ -485,7 +485,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 			return;
 		}
 
-		// relay only Eth + Ipv4 + Tcp packet.
+		// relay only Eth + Ipv4 packet.
 		eEthIpv4TcpPacket* pktHdr = (eEthIpv4TcpPacket*)rawRecv;
 		if (ntohs(pktHdr->eEthHdr_.TYPE) != EthHdr::Ip4){
 			// drop Ipv6, arp, etc.
@@ -498,7 +498,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 			uint32_t senderIp = SenderIpList_.at(i);
 			uint32_t targetIp = TargetIpList_.at(i);
 	
-			// src ip가 sender이고, 내 ip로 보낸 것이 아니라면,
+			// src ip가 sender이고, 내 ip로 보낸 패킷이 아니라면,
 			if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
 				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
 				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
