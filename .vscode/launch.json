@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/arp-spoof",
-            "args": [],
+            "args": ["wlp45s0", "192.168.186.13", "192.168.186.53"],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
