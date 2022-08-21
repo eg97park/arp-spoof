@@ -261,6 +261,7 @@ g_mutex_resolveMac.unlock();
 		if (res != 0) {
 			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 			pcap_close(handle);
+g_mutex_resolveMac.unlock();
 			return;
 		}
 	}
@@ -307,6 +308,7 @@ g_mutex_resolveMac.unlock();
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
 			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
 			pcap_close(handle);
+g_mutex_resolveMac.unlock();
 			return;
 		}
 
@@ -421,9 +423,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 	{
 		usleep(period_);
 		for(int i = 0; i < listSize; i++){
-g_mutex_resolveMac.lock();
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepInfectSenderList.at(i))), sizeof(EthArpPacket));
-g_mutex_resolveMac.unlock();
 			if (res != 0) {
 				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				pcap_close(handle);
@@ -431,9 +431,7 @@ g_mutex_resolveMac.unlock();
 			}
 			//printf("%s -> %s\n", std::string(pktArpRepInfectSenderList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectSenderList.at(i).eth_.dmac()).c_str());
 
-g_mutex_resolveMac.lock();
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfectTargetList.at(i)), sizeof(EthArpPacket));
-g_mutex_resolveMac.unlock();
 			if (res != 0) {
 				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				pcap_close(handle);
@@ -513,10 +511,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
 				memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
 
-g_mutex_resolveMac.lock();
 				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
-g_mutex_resolveMac.unlock();
-
 				if (res != 0) {
 					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 					pcap_close(handle);
@@ -534,10 +529,7 @@ g_mutex_resolveMac.unlock();
 				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
 				memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
 
-g_mutex_resolveMac.lock();
 				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
-g_mutex_resolveMac.unlock();
-
 				if (res != 0) {
 					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 					pcap_close(handle);
