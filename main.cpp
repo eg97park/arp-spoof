@@ -85,11 +85,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
 
-void SigintHandler(int SIGNUM_){
-	printf("\nSIGINT captured, joining threads...\n");
-	g_SIGINT_flag = true;
-	return;
-}
+void SigintHandler(int SIGNUM_);
 
 
 int main(int argc, char* argv[]) {
@@ -99,18 +95,23 @@ int main(int argc, char* argv[]) {
 	}
 
 	// capture SIGINT=Ctrl+C and call callback function SigintHandler.
+	// https://stackoverflow.com/questions/1641182/how-can-i-catch-a-ctrl-c-event
 	struct sigaction signalSet;
-	sigemptyset(&(signalSet.sa_mask));
+	if (sigemptyset(&(signalSet.sa_mask)) == -1){
+		fprintf(stderr, "sigemptyset error\n");
+	}
 	signalSet.sa_handler = SigintHandler;
 	signalSet.sa_flags = 0;
-	sigaction(SIGINT, &signalSet, NULL);
+	if (sigaction(SIGINT, &signalSet, NULL) == -1){
+		fprintf(stderr, "sigaction error\n");
+	}
 
 	const char* dev = argv[1];
 
 	// get my mac address.
 	Mac MyMac(GetMyMac(dev));
 	if (MyMac.isNull()){
-		fprintf(stderr, "main: GetMyMac error\n");
+		fprintf(stderr, "GetMyMac error\n");
 		return -1;
 	}
 
@@ -182,7 +183,7 @@ Mac GetMyMac(const std::string deviceName_){
 		return Mac().nullMac();
 	}
 
-	static std::string res;
+	std::string res;
 	std::getline(ifr, res);
 	ifr.close();
 	
@@ -366,6 +367,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 	 && SenderMacList_.size() == TargetIpList_.size()
 	 && TargetIpList_.size() == TargetMacList_.size())){
 		fprintf(stderr, "@tInfectAll: lise size error\n");
+		pcap_close(handle);
 		return;
 	}
 	const size_t listSize = SenderIpList_.size();
@@ -421,6 +423,7 @@ g_mutex_resolveMac.lock();
 g_mutex_resolveMac.unlock();
 			if (res != 0) {
 				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				pcap_close(handle);
 				return;
 			}
 			//printf("%s -> %s\n", std::string(pktArpRepInfectSenderList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectSenderList.at(i).eth_.dmac()).c_str());
@@ -430,11 +433,13 @@ g_mutex_resolveMac.lock();
 g_mutex_resolveMac.unlock();
 			if (res != 0) {
 				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				pcap_close(handle);
 				return;
 			}
 			//printf("%s -> %s\n", std::string(pktArpRepInfectTargetList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectTargetList.at(i).eth_.dmac()).c_str());
 		}
 	}
+	pcap_close(handle);
 	return;
 }
 
@@ -463,6 +468,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 	 && SenderMacList_.size() == TargetIpList_.size()
 	 && TargetIpList_.size() == TargetMacList_.size())){
 		fprintf(stderr, "@tRelayAll: list size error\n");
+		pcap_close(handle);
 		return;
 	}
 	const size_t listSize = SenderIpList_.size();
@@ -479,6 +485,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 		res = pcap_next_ex(handle, &header, &rawRecv);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
 			printf("@tRelayAll: pcap_next_ex error=%s\n", pcap_geterr(handle));
+			pcap_close(handle);
 			return;
 		}
 
@@ -509,6 +516,7 @@ g_mutex_resolveMac.unlock();
 
 				if (res != 0) {
 					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+					pcap_close(handle);
 					return;
 				}				
 				break;
@@ -529,11 +537,19 @@ g_mutex_resolveMac.unlock();
 
 				if (res != 0) {
 					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+					pcap_close(handle);
 					return;
 				}
 				break;
 			}
 		}
 	}
+	pcap_close(handle);
+	return;
+}
+
+void SigintHandler(int SIGNUM_){
+	printf("\nSIGINT captured, joining threads...\n");
+	g_SIGINT_flag = true;
 	return;
 }
