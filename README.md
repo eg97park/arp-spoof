@@ -1,8 +1,6 @@
 # arp-spoof
 BoB 11기 이경문 멘토님 과제입니다.
 
-https://gitlab.com/gilgil/sns/-/wikis/arp-spoofing/report-arp-spoof
-
 
 2022-08-21 21:04 기준 작동만 하는 코드이므로, 고칠 부분이 많습니다.
 
