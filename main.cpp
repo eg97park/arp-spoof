@@ -491,6 +491,9 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 		eEthIpv4TcpPacket* pktHdr = (eEthIpv4TcpPacket*)rawRecv;
 		if (ntohs(pktHdr->eEthHdr_.TYPE) != EthHdr::Ip4){
 			// drop Ipv6, arp, etc.
+			// @Todo: capture [sender -> me] ARP request(unicast to me) packet and refresh using single ARP reply packet.
+			// @Todo: capture [sedner -> all] ARP request(broadcast=expired) packet and refresh using multiple ARP reply packets.
+			// @Todo: capture [target -> sender] ARP request(host scan) packet and refresh single ARP reply packet.
 			continue;
 		}
  
@@ -502,6 +505,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 	
 			// src ip가 sender이고, 내 ip로 보낸 패킷이 아니라면,
 			if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
+				// @Todo: pass jumbo frames.
 				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
 				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
 
