@@ -111,6 +111,7 @@ g_mutex_resolveMac.unlock();
 		}
 	}
 g_mutex_resolveMac.unlock();
+	pcap_close(handle);
 	return;
 }
 
@@ -172,6 +173,7 @@ g_mutex_resolveMac.unlock();
 		}
 	}
 g_mutex_resolveMac.unlock();
+	pcap_close(handle);
 	return;
 }
 
@@ -241,14 +243,18 @@ void SpoofWorker(const char* deviceName_, Mac MyMac_,
 	{
 		usleep(period_);
 		for(int i = 0; i < listSize; i++){
+g_mutex_resolveMac.lock();
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepInfectSenderList.at(i))), sizeof(EthArpPacket));
+g_mutex_resolveMac.unlock();
 			if (res != 0) {
 				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				return;
 			}
 			//printf("%s -> %s\n", std::string(pktArpRepInfectSenderList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectSenderList.at(i).eth_.dmac()).c_str());
 
+g_mutex_resolveMac.lock();
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfectTargetList.at(i)), sizeof(EthArpPacket));
+g_mutex_resolveMac.unlock();
 			if (res != 0) {
 				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				return;
@@ -318,7 +324,7 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
 				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
 				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
-				
+
 				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
 				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
 				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
@@ -333,7 +339,9 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 				*/
 
 				
-				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktHdr), header->caplen);
+g_mutex_resolveMac.lock();
+				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
+g_mutex_resolveMac.unlock();
 				if (res != 0) {
 					fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 					return;
@@ -362,7 +370,9 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
 				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
 				memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
-				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktHdr), header->caplen);
+g_mutex_resolveMac.lock();
+				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
+g_mutex_resolveMac.unlock();
 				if (res != 0) {
 					fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 					return;
