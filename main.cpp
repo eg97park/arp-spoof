@@ -1,27 +1,31 @@
-#include <cstdio>
 #include <pcap.h>
 #include "ethhdr.h"
 #include "arphdr.h"
-#include <string>
-#include <fstream>
 
-#include <unistd.h>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
-#include <vector>
 #include <iostream>
+#include <string>
+#include <vector>
+#include <fstream>
+
 #include <thread>
+#include <mutex>
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <netinet/in.h>
 #include <net/if.h>
-#include <arpa/inet.h>
-#include <mutex>
-#include <chrono>
+
+#include <unistd.h>
 #include <signal.h>
 
+
+/**
+ * @brief mutex for threads,
+ *  SIGINT flag to join threads.
+ */
 std::mutex g_mutex_resolveMac;
 bool g_SIGINT_flag = false;
 
@@ -114,7 +118,6 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "GetMyMac error\n");
 		return -1;
 	}
-
 
 	// count jobs.
 	const int jobNum = (argc - 2) / 2;
@@ -346,11 +349,11 @@ g_mutex_resolveMac.unlock();
  * 
  * @param[in] deviceName_ NIC device name.
  * @param[in] MyMac_ MyMac object.
- * @param SenderIpList_ sender Ip object list to infect.
- * @param SenderMacList_ sender Mac object list to infect.
- * @param TargetIpList_ target Ip object list to infect.
- * @param TargetMacList_ target Mac object list to infect.
- * @param period_ infection period value to put to usleep().
+ * @param[in] SenderIpList_ sender Ip object list to infect.
+ * @param[in] SenderMacList_ sender Mac object list to infect.
+ * @param[in] TargetIpList_ target Ip object list to infect.
+ * @param[in] TargetMacList_ target Mac object list to infect.
+ * @param[in] period_ infection period value to put to usleep().
  */
 void tInfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
@@ -449,10 +452,10 @@ g_mutex_resolveMac.unlock();
  * 
  * @param[in] deviceName_ NIC device name.
  * @param[in] MyMac_ MyMac object.
- * @param SenderIpList_ sender Ip object list to relay.
- * @param SenderMacList_ sender Mac object list to relay.
- * @param TargetIpList_ target Ip object list to relay.
- * @param TargetMacList_ target Mac object list to relay.
+ * @param[in] SenderIpList_ sender Ip object list to relay.
+ * @param[in] SenderMacList_ sender Mac object list to relay.
+ * @param[in] TargetIpList_ target Ip object list to relay.
+ * @param[in] TargetMacList_ target Mac object list to relay.
  */
 void tRelayAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
@@ -548,6 +551,12 @@ g_mutex_resolveMac.unlock();
 	return;
 }
 
+
+/**
+ * @brief Capture signal.
+ * 
+ * @param[in] SIGNUM_  caputured signal number. must be SIGINT.
+ */
 void SigintHandler(int SIGNUM_){
 	printf("\nSIGINT captured, joining threads...\n");
 	g_SIGINT_flag = true;
