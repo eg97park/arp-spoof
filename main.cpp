@@ -89,6 +89,10 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
 
+void RecoverArpTables(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
+ std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
+
 void SigintHandler(int SIGNUM_);
 
 
@@ -152,8 +156,13 @@ int main(int argc, char* argv[]) {
 	// relay all.
 	std::thread RelayThread(tRelayAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
 
+	// Wait SIGINT...
 	RelayThread.join();
 	InfectThread.join();
+
+	// recover all.
+	RecoverArpTables(dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
+
 	return 0;
 }
 
@@ -377,7 +386,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 	}
 	const size_t listSize = SenderIpList_.size();
 
-	// sender <-> me.
+	// sender <-> me. claim "I am target."
 	std::vector<EthArpPacket> pktArpRepInfectSenderList;
 	for(int i = 0; i < listSize; i++){
 		EthArpPacket pkt;
@@ -397,7 +406,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 		pktArpRepInfectSenderList.push_back(pkt);
 	}
 
-	// target <-> me.
+	// target <-> me. claim "I am sender."
 	std::vector<EthArpPacket> pktArpRepInfectTargetList;
 	for(int i = 0; i < listSize; i++){
 		EthArpPacket pkt;
@@ -537,6 +546,69 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 				}
 				break;
 			}
+		}
+	}
+	pcap_close(handle);
+	return;
+}
+
+
+/**
+ * @brief Recover infected ARP tables of senders and targets.
+ * 
+ * @param[in] deviceName_ NIC device name.
+ * @param[in] MyMac_ MyMac object.
+ * @param[in] SenderIpList_ sender Ip object list to recover.
+ * @param[in] SenderMacList_ sender Mac object list to recover.
+ * @param[in] TargetIpList_ target Ip object list to recover.
+ * @param[in] TargetMacList_ target Mac object list to recover.
+ */
+void RecoverArpTables(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
+ std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_){
+	char errbuf[PCAP_ERRBUF_SIZE];
+	pcap_t* handle = pcap_open_live(deviceName_, BUFSIZ, 1, 1, errbuf);
+	if (handle == nullptr) {
+		fprintf(stderr, "pcap_open_live error=%s\n", pcap_geterr(handle));
+		return;
+	}
+
+	const size_t listSize = SenderIpList_.size();
+
+	// claim "SenderIp is at SenderMac.", "TargetIp is at TargetMac."
+	std::vector<EthArpPacket> pktArpRepRecoverList;
+	for(int i = 0; i < listSize; i++){
+		EthArpPacket pkt;
+		pkt.eth_.smac_ = MyMac_;
+		pkt.eth_.dmac_ = TargetMacList_.at(i);
+		pkt.eth_.type_ = htons(EthHdr::Arp);
+		pkt.arp_.hrd_ = htons(ArpHdr::ETHER);
+		pkt.arp_.pro_ = htons(EthHdr::Ip4);
+		pkt.arp_.hln_ = Mac::SIZE;
+		pkt.arp_.pln_ = Ip::SIZE;
+		pkt.arp_.op_ = htons(ArpHdr::Reply);
+		pkt.arp_.smac_ = SenderMacList_.at(i);
+		pkt.arp_.sip_ = htonl(SenderIpList_.at(i));
+		pkt.arp_.tmac_ = TargetMacList_.at(i);
+		pkt.arp_.tip_ = htonl(TargetIpList_.at(i));
+		
+		pktArpRepRecoverList.push_back(pkt);
+
+		pkt.eth_.dmac_ = SenderMacList_.at(i);
+		pkt.arp_.smac_ = TargetMacList_.at(i);
+		pkt.arp_.sip_ = htonl(TargetIpList_.at(i));
+		pkt.arp_.tmac_ = SenderMacList_.at(i);
+		pkt.arp_.tip_ = htonl(SenderIpList_.at(i));
+		pktArpRepRecoverList.push_back(pkt);
+	}
+
+	int res = 0;
+	for(int i = 0; i < pktArpRepRecoverList.size(); i++){
+		res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepRecoverList.at(i))), sizeof(EthArpPacket));
+		if (res != 0) {
+			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+			pcap_close(handle);
+			return;
 		}
 	}
 	pcap_close(handle);
