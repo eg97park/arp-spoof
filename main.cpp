@@ -30,6 +30,13 @@ struct EthArpPacket final {
 	ArpHdr arp_;
 };
 
+// my ethernet header from pcap-test assginment.
+typedef struct eEthHdr_{
+	uint8_t DST_MAC_ADDR[6];
+	uint8_t SRC_MAC_ADDR[6];
+	uint16_t TYPE;
+}eEthHdr;
+
 // my ipv4 header from pcap-test assginment.
 typedef struct eIpv4Hdr_{
 #if BYTE_ORDER == LITTLE_ENDIAN
@@ -71,7 +78,7 @@ typedef struct eTcpHdr_{
 
 // Eth && Ipv4 && Tcp packet structure.
 struct eEthIpv4TcpPacket{
-	EthHdr eth_;
+	eEthHdr eEthHdr_;
 	eIpv4Hdr eIpv4Hdr_;
 	eTcpHdr eTcpHdr_;
 };
@@ -290,6 +297,9 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 		return;
 	}
 	const size_t listSize = SenderIpList_.size();
+	const uint8_t* myMacAddr = (uint8_t*)(MyMac_);
+	Ip myIp = GetMyIp(deviceName_);
+	const uint32_t myIpAddr = (uint32_t)myIp;
 
 	int res = 0;
 	struct pcap_pkthdr* header;
@@ -305,20 +315,69 @@ void RelayWorker(const char* deviceName_, Mac MyMac_,
 
 		// relay only Eth + Ipv4 + Tcp packet.
 		eEthIpv4TcpPacket* pktHdr = (eEthIpv4TcpPacket*)rawRecv;
-		if (ntohs (pktHdr->eth_.type_) != EthHdr::Ip4){
+		if (ntohs(pktHdr->eEthHdr_.TYPE) != EthHdr::Ip4){
 			// drop Ipv6, arp, etc.
+			continue;
+		}
+		if (pktHdr->eIpv4Hdr_.PROTOCOL != 0x06){
+			// drop udp, etc.
 			continue;
 		}
 
 		for(int i = 0; i < listSize; i++){
-			if (ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR) == SenderIpList_.at(i)){
-				// sender -> ...
-				printf("@RelayWorker: cap\t%s -> %s\n", std::string(SenderIpList_.at(i)).c_str(), std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
+			if (ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR) == SenderIpList_.at(i)
+			 && ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR) != myIpAddr){
+				// 진짜 나한테 보낸 패킷, 즉 DST_IP_ADDR이 나인 것은 변조하면 안됨. 예외.
+				printf("@RelayWorker: sender -> target\n");
+				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n",
+				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
+				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
+				
+				uintptr_t originalSrcMacPtr = (uintptr_t)(pktHdr->eEthHdr_.SRC_MAC_ADDR);
+				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+				uintptr_t originalDstMacPtr = (uintptr_t)(pktHdr->eEthHdr_.DST_MAC_ADDR);
+				memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
+				
+				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktHdr), header->caplen);
+				if (res != 0) {
+					fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+					return;
+				}
+				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n\n\n",
+				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
+				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
+				
 				break;
 			}
-			else if (ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR) == TargetIpList_.at(i)){
-				// target -> ...
-				printf("@RelayWorker: cap\t%s -> %s\n", std::string(TargetIpList_.at(i)).c_str(), std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
+
+			if (memcmp(pktHdr->eEthHdr_.SRC_MAC_ADDR, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6) == 0
+			&& ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR) != myIpAddr){
+				// 진짜 나한테 보낸 패킷, 즉 DST_IP_ADDR이 나인 것은 변조하면 안됨. 예외.
+				printf("@RelayWorker: target -> sender\n");
+				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n",
+				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
+				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
+
+				uintptr_t originalSrcMacPtr = (uintptr_t)(pktHdr->eEthHdr_.SRC_MAC_ADDR);
+				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+				uintptr_t originalDstMacPtr = (uintptr_t)(pktHdr->eEthHdr_.DST_MAC_ADDR);
+				memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
+				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktHdr), header->caplen);
+				if (res != 0) {
+					fprintf(stderr, "@ResolveTargetMacSender @pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+					return;
+				}
+				printf("smac=%s\tdmac=%s\nsip=%s\tdip=%s\n\n\n",
+				 std::string(Mac(pktHdr->eEthHdr_.SRC_MAC_ADDR)).c_str(),
+				 std::string(Mac(pktHdr->eEthHdr_.DST_MAC_ADDR)).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR))).c_str(),
+				 std::string(Ip(ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR))).c_str());
 				break;
 			}
 		}
