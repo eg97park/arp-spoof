@@ -85,6 +85,10 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
 std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_, int period_);
 
+void tCaptureAll(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
+ std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
+
 void tRelayAll(const char* deviceName_, Mac MyMac_,
  std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
  std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_);
@@ -438,6 +442,14 @@ void tInfectAll(const char* deviceName_, Mac MyMac_,
 		}
 	}
 	pcap_close(handle);
+	return;
+}
+
+
+
+void tCaptureAll(const char* deviceName_, Mac MyMac_,
+ std::vector<Ip> SenderIpList_, std::vector<Mac> SenderMacList_,
+ std::vector<Ip> TargetIpList_, std::vector<Mac> TargetMacList_){
 	return;
 }
 
